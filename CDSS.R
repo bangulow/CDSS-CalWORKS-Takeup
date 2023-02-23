@@ -7,8 +7,9 @@ library(sf)
 library(spData)
 library(stringr)
 library(openxlsx)
+library(scales)
 
-##California county shapefile
+##California counties shape file
 setwd("~/Documents/Coding LAB/California_Counties")
 
 cali_geo <- st_read("Counties.shp")
@@ -22,50 +23,53 @@ ddi <- read_ipums_ddi("usa_00004.xml")
 ACS_data <- read_ipums_micro(ddi)
 
 summary(ACS_data)
+##ACS data shows 39.5 million population in 2019-- coorect.
+ACS_data %>%
+  summarise(sum(PERWT, na.rm = TRUE))
 
-##decrease to household with children
-ACS_cnty <- ACS_data %>%
+##clean to decrease household with children and 80 below poverty level
+ACS_clean <- ACS_data %>%
   filter(NCHILD > 0 & POVERTY < 81)  %>%
-  select(YEAR, COUNTYFIP, HHINCOME, FAMSIZE, NCHILD, POVERTY)
+  select(YEAR, COUNTYFIP, HHWT, PERWT, HHINCOME, FAMSIZE, NCHILD, POVERTY)
 
-##get a population count
-ACS_indv <- sum(ACS_cnty$FAMSIZE)
-ACS_all <- sum(ACS_data$FAMSIZE)
+##Household count -- in poverty with children population (i.e. eligible)
+ACS_clean %>%
+  summarise(sum(HHWT, na.rm = TRUE))
+##737086 House Holds (multi-family homes)
 
-ACS_cnty %>%
-  summarise(sum(FAMSIZE, na.rm = TRUE))
+##Person weight-- in poverty with children population (i.e. eligible)
+ACS_clean %>%
+  summarise(sum(PERWT, na.rm = TRUE))
+##758243 People
 
-#26,871 total members of household in 2019 with children at poverty threshold 
-#create poverty per household member
-ACS_cnty$Poverty <- ACS_cnty$HHINCOME / ACS_cnty$FAMSIZE
 
-cnty_pvrty <- ACS_cnty %>% 
+##Income per person
+ACS_clean$Poverty <- ACS_clean$HHINCOME / ACS_clean$PERWT
+
+##populations mean income per person living in poverty. ACS only has 35 counties
+ACS_cnty_pvrty <- ACS_clean %>% 
   group_by(COUNTYFIP) %>% 
   summarise(Pct_Poverty = mean(Poverty))
 
-all_cnty_wlfr <- ACS_data %>% 
-  group_by(COUNTYICP) %>% 
-  summarise(Poverty = mean(POVERTY))
-
 ##create FIP to match with CDSS County codes
-cnty_pvrty$COUNTYFIP <- as.integer(cnty_pvrty$COUNTYFIP)
+ACS_cnty_pvrty$COUNTYFIP <- as.integer(ACS_cnty_pvrty$COUNTYFIP)
 
-cnty_pvrty$COUNTYFIP <- paste0("060", cnty_pvrty$COUNTYFIP) 
+ACS_cnty_pvrty$COUNTYFIP <- paste0("060", ACS_cnty_pvrty$COUNTYFIP) 
 
 ####-------------------------------------------------------------------------------
 
-
 ##CDSS Data from fiscal year 2019-2020
 ##https://www.cdss.ca.gov/inforesources/research-and-data/calworks-data-tables/ca-237-cw 
-CDSS_columnsNames <- read.xlsx("CDSS_data.xlsx", colNames = F, na.strings="*")
+CDSS <- read.xlsx("CDSS_data.xlsx", colNames = F, na.strings="*")
 
 ###Clean data sheet for all caseload info only
-CDSS_clean <- CDSS_columnsNames[-1, ]
+CDSS_clean <- CDSS[-1, ]
 
-##Cases (all caseload) receiving cash grants
+##Cases (all caseload) receiving cash grants (section 8A)
 CDSS_clean <- CDSS_clean %>%
   select(2:6, 70:74)
 
+##Clean df
 ##rename values for new header
 CDSS_clean$X70[CDSS_clean$X70 == '64'] <- 'Two Parent'
 CDSS_clean$X71[CDSS_clean$X71 == '65'] <- 'Zero Parent'
@@ -85,10 +89,8 @@ CDSS_clean$'All Other'[CDSS_clean$'All Other' == 'All Other'] <- '66'
 CDSS_clean$'TANF  Timed-Out'[CDSS_clean$'TANF  Timed-Out' == 'TANF  Timed-Out'] <- '67'
 CDSS_clean$'SN/FF/LTS'[CDSS_clean$'SN/FF/LTS' == 'SN/FF/LTS'] <- '68'
 
-##ALL CASELOAD for July 2019-July 2020 receiving cash grants
-view(CDSS_clean)
 
-##create a total column, first create intergers and NAs
+##create a total column, first create integers and NAs
 CDSS_clean$'Two Parent' <- as.integer(CDSS_clean$'Two Parent')
 CDSS_clean$'Zero Parent' <- as.integer(CDSS_clean$'Zero Parent')
 CDSS_clean$'All Other' <- as.integer(CDSS_clean$'All Other')
@@ -103,7 +105,10 @@ CDSS_clean$Total<-apply(cbind(CDSS_clean$'Zero Parent',
                               CDSS_clean$'SN/FF/LTS'),1,
                         function(x) ifelse(all(is.na(x)),NA,sum(x,na.rm=T)))
 
-##total cash assistance participants for 2020, july, end of fiscal year
+##ALL CASELOAD for July 2019-July 2020 receiving cash grants
+view(CDSS_clean)
+
+##total cash assistance participants for 2020, july, end of fiscal year (i.e. numerator)
 CDSS_clean %>% filter(Month == "6" & Year == "2020" & `County Name` == "Statewide") %>%
   select(Total)
 ##348,220
@@ -123,64 +128,55 @@ jly_cntys_geo$COUNTYFIP <- jly_cntys_geo$GeoID
 
 
 
-##Cali Map in Counties
+##Cali Counties map of count of cash grant recipients
 ggplot(data = cali_geo) +
   geom_sf(data = jly_cntys_geo, aes(fill = Total)) +
-  labs(title = "Total Caseloads Receiving CashGrants By County",
-       subtitle = "Data for July 2019",
-       fill = element_blank(),
-       caption = "Source: CDSS.gov") +
-  theme_void()
+  labs(title = "Total Caseloads Receiving Cash Grants By County",
+       subtitle = "*Gray scale counties are missing in data collected.",
+       fill = "Total Cases",
+       caption = "Source: CDSS 2019-2020 Fiscal Year") + 
+  scale_fill_continuous(labels = function(x) format(x, big.mark = ",", scientific = FALSE)) +
+  theme_void() 
 
-aaaa <- CDSS_clean %>% 
-  group_by("County Name") %>% 
-  summarise(mean(is.na("Total")))
+###data frame with county population below poverty (mean income per person = Pct_poverty
+##only 35 counties have Pct_poverty, the rest are NA 
+CDSS_ACS <- left_join(jly_cntys_geo, ACS_cnty_pvrty, by = "COUNTYFIP")
 
-
-###Need to create a DF with fiscal year
-CDSS_ACS <- left_join(jly_cntys_geo, cnty_pvrty, by = "COUNTYFIP")
-
+##map, but only 26 counties show because FIPS codes don't match
 ggplot(data = cali_geo) +
   geom_sf(data = CDSS_ACS, aes(fill = Pct_Poverty)) +
-  labs(title = "County's Mean Poverty Level",
-       subtitle = "Data for July 2019",
-       fill = element_blank(),
-       caption = "Source: CDSS.gov & ACS") +
-  theme_void()
+  labs(title = "Mean Income Per Person Living in Poverty",
+       subtitle = "ACS 2019 data only captures data from 35/58 counties.
+Some counties are missing from mismatched geographical data points.",
+       fill = "Avg. Income
+Per Person",
+       caption = "Source: IPUMS USA, ACS 2019") + 
+  scale_fill_continuous(labels = dollar_format( )) +
+  theme_void() 
 
 
-#####Removed
-setwd("~/Documents/Coding LAB")
+####Total Eligible population 
 
-cnty_nm_cd <- read.csv("fips2county.tsv", sep = "\t")
+##person count in eligible population
+ACS_cnty_pop <- ACS_clean %>% 
+  group_by(COUNTYFIP) %>% 
+  summarise(Ppl_Pov = sum(PERWT))
 
-cnty_nm_cd <- cnty_nm_cd %>%
-  filter(StateAbbr == "CA") %>%
-  select(CountyName, CountyFIPS)
+##create FIP to match with CDSS County codes
+ACS_cnty_pop$COUNTYFIP <- as.integer(ACS_cnty_pop$COUNTYFIP)
 
-##
-cali_geo$COUNTY <- sub( ".", "", cali_geo$GeoID) 
+ACS_cnty_pop$COUNTYFIP <- paste0("060", ACS_cnty_pop$COUNTYFIP) 
 
-cali_geo$COUNTY <- as.character(cali_geo$COUNTY)
+x_CDSS_ACS <- left_join(jly_cntys_geo, ACS_cnty_pop, by = "COUNTYFIP")
 
-data$COUNTY <- as.character(data$COUNTY)
-
-cali_joined <- right_join(cali_geo, data, by = "COUNTY")
-
-cali_joined_X <- cali_joined %>%
-  group_by(COUNTY) %>%
-  summarise(mean_inc = mean(poverty), n = n( ))
-
-####get data. down to 58 counties
-cali_58 <- cali_joined %>% left_join(cnty_nm_cd, cali_joined, by = "COUNTY")
-
-cnty_nm_cd$COUNTY <- as.integer(cnty_nm_cd$CountyFIPS)
-cali_joined$COUNTY <- as.integer(cali_joined$COUNTY)
-
-cnty_nm_cd$COUNTY <- cnty_nm_cd$CountyFIPS
- 
-
-
-
-####removals 
+ggplot(data = cali_geo) +
+  geom_sf(data = x_CDSS_ACS, aes(fill = Ppl_Pov)) +
+  labs(title = "Population 80% below poverty, with children",
+       subtitle = "ACS 2019 data only captures data from 35/58 counties.
+Some counties are missing from mismatched geographical data points.",
+       fill = "Total People
+(758,243)",
+       caption = "Source: IPUMS USA, ACS 2019") + 
+  scale_fill_continuous(labels = function(x) format(x, big.mark = ",", scientific = FALSE)) +
+  theme_void() 
 
