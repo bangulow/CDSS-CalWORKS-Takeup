@@ -42,7 +42,6 @@ ACS_clean %>%
   summarise(sum(PERWT, na.rm = TRUE))
 ##758243 People
 
-
 ##Income per person
 ACS_clean$Poverty <- ACS_clean$HHINCOME / ACS_clean$PERWT
 
@@ -133,7 +132,8 @@ ggplot(data = cali_geo) +
   geom_sf(data = jly_cntys_geo, aes(fill = Total)) +
   labs(title = "Total Caseloads Receiving Cash Grants By County",
        subtitle = "*Gray scale counties are missing in data collected.",
-       fill = "Total Cases",
+       fill = "Total Cases
+(348,220)",
        caption = "Source: CDSS 2019-2020 Fiscal Year") + 
   scale_fill_continuous(labels = function(x) format(x, big.mark = ",", scientific = FALSE)) +
   theme_void() 
@@ -179,4 +179,56 @@ Some counties are missing from mismatched geographical data points.",
        caption = "Source: IPUMS USA, ACS 2019") + 
   scale_fill_continuous(labels = function(x) format(x, big.mark = ",", scientific = FALSE)) +
   theme_void() 
+
+
+
+########Cases fallout rate per county 
+CDSS_fallout <- read.xlsx("CDSS_data.xlsx", colNames = F, na.strings="*")
+
+###Clean data sheet for all caseload info only
+CDSS_fallout<- CDSS_fallout[-1, ]
+
+##Cases (all caseload) receiving cash grants (section 8A)
+CDSS_fallout <- CDSS_fallout %>%
+  select(2:6, 13:16)
+
+##rename values for new header
+CDSS_fallout$X13[CDSS_fallout$X13 == '7'] <- 'Total Apps'
+CDSS_fallout$X14[CDSS_fallout$X14 == '8'] <- 'Total Disposed'
+CDSS_fallout$X15[CDSS_fallout$X15 == '9'] <- 'Approved'
+CDSS_fallout$X16[CDSS_fallout$X16 == '10'] <- 'Denied'
+
+##make  row the header
+names(CDSS_fallout) <- CDSS_fallout[4, ]
+CDSS_fallout <- CDSS_fallout[-(1:4),]
+
+##get rid of NA
+CDSS_fallout <- replace(CDSS_fallout, is.na(CDSS_fallout), 0)
+
+
+##create a total column, first create integers and NAs
+CDSS_fallout$'Total Apps' <- as.integer(CDSS_fallout$'Total Apps')
+CDSS_fallout$'Total Disposed' <- as.integer(CDSS_fallout$'Total Disposed')
+CDSS_fallout$'Approved' <- as.integer(CDSS_fallout$'Approved')
+CDSS_fallout$'Denied' <- as.integer(CDSS_fallout$'Denied')
+
+##Percent denied
+CDSS_fallout$Perc_Denied <- (CDSS_fallout$'Denied' / CDSS_fallout$'Total Apps') * 100
+
+##Percent denied by 58 counties
+CDSS_fallout <- CDSS_fallout %>% 
+  filter(Month == 7)
+
+##remove statewide info
+CDSS_fallout <- CDSS_fallout[-1, ]
+
+##top 10 counties that deny apps the most
+top_10_deny <- CDSS_fallout %>% 
+  select("County Name", Perc_Denied) %>% 
+  arrange(desc(Perc_Denied)) %>%
+  head(10)
+
+
+
+
 
