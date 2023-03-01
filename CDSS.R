@@ -9,7 +9,7 @@ library(stringr)
 library(openxlsx)
 library(scales)
 
-##California counties shape file
+##California counties shape file, (https://data.ca.gov/)
 setwd("~/Documents/Coding LAB/California_Counties")
 
 cali_geo <- st_read("Counties.shp")
@@ -17,43 +17,103 @@ cali_geo <- st_read("Counties.shp")
 ggplot(data = cali_geo) +
   geom_sf()
 
-#ACS Data from 2019 IPUMS California 
+#ACS Data from 2019 (1 year) IPUMS-California (STATECODE:6) 
 setwd("~/Documents/Coding LAB")
 ddi <- read_ipums_ddi("usa_00004.xml")
 ACS_data <- read_ipums_micro(ddi)
 
-summary(ACS_data)
-##ACS data shows 39.5 million population in 2019-- coorect.
+##ACS data shows 39.5 million population in 2019-- correct.
 ACS_data %>%
   summarise(sum(PERWT, na.rm = TRUE))
 
-##clean to decrease household with children and 80 below poverty level
-ACS_clean <- ACS_data %>%
-  filter(NCHILD > 0 & POVERTY < 81)  %>%
-  select(YEAR, COUNTYFIP, HHWT, PERWT, HHINCOME, FAMSIZE, NCHILD, POVERTY)
+##clean to decrease population to children and 80 below poverty level
+ACS_chld <- ACS_data %>%
+  filter(AGE < 18 & POVERTY <= 80)
 
-##Household count -- in poverty with children population (i.e. eligible)
-ACS_clean %>%
-  summarise(sum(HHWT, na.rm = TRUE))
-##737086 House Holds (multi-family homes)
-
-##Person weight-- in poverty with children population (i.e. eligible)
-ACS_clean %>%
+ACS_chld %>%
   summarise(sum(PERWT, na.rm = TRUE))
-##758243 People
+##1,127,323
 
-##Income per person
-ACS_clean$Poverty <- ACS_clean$HHINCOME / ACS_clean$PERWT
+##filter for unique SERIAL numbers to capture households without repetition (i.e. siblings)
+ACS_chld_dstnct <- ACS_chld %>% distinct(SERIAL, .keep_all = TRUE)
 
-##populations mean income per person living in poverty. ACS only has 35 counties
-ACS_cnty_pvrty <- ACS_clean %>% 
-  group_by(COUNTYFIP) %>% 
-  summarise(Pct_Poverty = mean(Poverty))
+ACS_chld_dstnct %>% 
+  summarise(sum(HHWT, na.rm = TRUE))
+##483,225
 
-##create FIP to match with CDSS County codes
-ACS_cnty_pvrty$COUNTYFIP <- as.integer(ACS_cnty_pvrty$COUNTYFIP)
+#create data set to capture only households w/ adults below poverty using unique SERIAL
+ACS_adlts <- ACS_data %>%
+  filter(AGE >=18 & POVERTY <= 80)
 
-ACS_cnty_pvrty$COUNTYFIP <- paste0("060", ACS_cnty_pvrty$COUNTYFIP) 
+ACS_adlts_dstnct <- ACS_adlts %>% distinct(SERIAL, .keep_all = TRUE)
+
+ACS_adlts_dstnct %>% 
+  summarise(sum(HHWT, na.rm = TRUE))
+  ##2,159,624
+
+##join adult and child poverty data sets for all households with children below poverty
+ACS_join <- left_join(ACS_chld, ACS_adlts, by = "SERIAL")
+
+ACS_join_dstnct <- ACS_join %>% distinct(SERIAL, .keep_all = TRUE)
+
+ACS_join_dstnct %>% 
+  summarise(sum(HHWT.x, na.rm = TRUE))
+##483,225
+
+ACS_join %>% 
+  summarise(sum(PERWT.x, na.rm = TRUE))
+##1,939,110  
+  
+
+##ACS new with citizenship variable (3 is non citizen, we assume .55 of non citizens are LPR, according to DHS 2015)
+###___________________Includes Citizenship status 
+#ACS Data from 2019 IPUMS California 
+setwd("~/Documents/Coding LAB")
+ddi <- read_ipums_ddi("usa_00005.xml")
+ACS_data_ctzn <- read_ipums_micro(ddi)
+
+##ACS data shows 39.5 million population in 2019-- correct.
+ACS_data_ctzn %>%
+  summarise(sum(PERWT, na.rm = TRUE))
+
+##clean to decrease household with children and 80 below poverty level
+ACS_chld_ctzn <- ACS_data_ctzn %>%
+  filter(AGE < 18 & POVERTY <= 80)  %>%
+  select(YEAR, SERIAL, COUNTYFIP, HHWT, PERWT, HHINCOME, FAMSIZE, NCHILD, POVERTY, CITIZEN)
+
+##total children in poverty
+ACS_chld_ctzn %>%
+  summarise(sum(PERWT, na.rm = TRUE))
+##1,127,323  
+
+##adults in poverty 
+ACS_adlts_ctzn <- ACS_data_ctzn %>%
+  filter(AGE >=18 & POVERTY <= 80)
+
+##join data sets for children and adults households <80 FPL
+ACS_join_ctzn <- left_join(ACS_chld_ctzn, ACS_adlts_ctzn, by = "SERIAL")
+
+###create .55 random sample of 1 citizen, 0 not citizen/not eligible
+nonctzn <- ACS_join_ctzn %>%
+  filter(CITIZEN.x == 3 | CITIZEN.y == 3)
+
+nonctzn <- nonctzn %>% distinct(SERIAL, .keep_all = TRUE)
+
+nonctzn %>%
+  summarise(sum(HHWT.y, na.rm = TRUE))
+##172,287
+
+nonctzn %>%
+  summarise(sum(HHWT.x, na.rm = TRUE))
+##176,812
+
+##about 174,000 HH are by noncitizens
+174000 * .55
+##95,700 are LPR
+
+##subtract non citizen from total HH pop under poverty, add back in LPR
+(483225 - 174000) + 95700
+##404925
 
 ####-------------------------------------------------------------------------------
 
@@ -97,92 +157,105 @@ CDSS_clean$'TANF  Timed-Out' <- as.integer(CDSS_clean$'TANF  Timed-Out')
 CDSS_clean$'SN/FF/LTS' <- as.integer(CDSS_clean$'SN/FF/LTS')
 
 ##Create a total for all situations column per county & statewide
-CDSS_clean$Total<-apply(cbind(CDSS_clean$'Zero Parent',
-                              CDSS_clean$'Two Parent', 
-                              CDSS_clean$'All Other',
-                              CDSS_clean$'TANF Timed-Out',
-                              CDSS_clean$'SN/FF/LTS'),1,
-                        function(x) ifelse(all(is.na(x)),NA,sum(x,na.rm=T)))
+CDSS_clean <- replace(CDSS_clean,is.na(CDSS_clean),0)
 
-##ALL CASELOAD for July 2019-July 2020 receiving cash grants
-view(CDSS_clean)
+CDSS_clean$Total <- rowSums(CDSS_clean[,6:10])
 
-##total cash assistance participants for 2020, july, end of fiscal year (i.e. numerator)
-CDSS_clean %>% filter(Month == "6" & Year == "2020" & `County Name` == "Statewide") %>%
+
+##total cash assistance CASELOADS for 2019, July, end of fiscal year (i.e. numerator)
+CDSS_clean %>% filter(Month == "7" & Year == "2019" & `County Name` == "Statewide") %>%
   select(Total)
-##348,220
+##366,281
+##--------------------------------------------------------------------------------------
+##total cash assistance PERSONS(adults and children) for 2019, July, 
+##end of fiscal year (i.e. numerator)
 
-##select month of July 2019, for all 58 counties
-CDSS_July_Cntys <- CDSS_clean %>% 
+CDSS_PERWT <- CDSS[-1, ]
+
+##Cases (all caseload) receiving cash grants (section 8A)
+CDSS_PERWT <- CDSS_PERWT %>%
+  select(2:6, 75:82)
+
+##Clean df
+##rename values for new header
+CDSS_PERWT$X75[CDSS_PERWT$X75 == '69'] <- 'chld_Two Parent'
+CDSS_PERWT$X76[CDSS_PERWT$X76 == '70'] <- 'chld_Zero Parent'
+CDSS_PERWT$X77[CDSS_PERWT$X77 == '71'] <- 'chld_All Other'
+CDSS_PERWT$X78[CDSS_PERWT$X78 == '72'] <- 'chld_TANF  Timed-Out'
+CDSS_PERWT$X79[CDSS_PERWT$X79 == '73'] <- 'chld_SN/FF/LTS'
+CDSS_PERWT$X80[CDSS_PERWT$X80 == '74'] <- 'adlt_Two Parent'
+CDSS_PERWT$X81[CDSS_PERWT$X81 == '75'] <- 'adlt_All Other'
+CDSS_PERWT$X82[CDSS_PERWT$X82 == '76'] <- 'adlt_TANF  Timed-Out'
+
+##make  row the header
+names(CDSS_PERWT) <- CDSS_PERWT[4, ]
+
+CDSS_PERWT <- CDSS_PERWT[-(1:4),]
+
+###make NAs zeros to add cases 
+CDSS_PERWT <- replace(CDSS_PERWT,is.na(CDSS_PERWT),0)
+
+##re-value name and number changes from header change
+CDSS_PERWT$'chld_Two Parent'[CDSS_PERWT$'chld_Two Parent' == 'chld_Two Parent'] <- '69' 
+CDSS_PERWT$'chld_Zero Parent'[CDSS_PERWT$'chld_Zero Parent' == 'chld_Zero Parent'] <- '70' 
+CDSS_PERWT$'chld_All Other'[CDSS_PERWT$'chld_All Other' == 'chld_All Other'] <- '71' 
+CDSS_PERWT$'chld_TANF  Timed-Out'[CDSS_PERWT$'chld_TANF  Timed-Out' == 'chld_TANF  Timed-Out'] <- '72'
+CDSS_PERWT$'chld_SN/FF/LTS'[CDSS_PERWT$'chld_SN/FF/LTS' == 'chld_SN/FF/LTS'] <- '73'
+CDSS_PERWT$'adlt_Two Parent'[CDSS_PERWT$'adlt_Two Parent' == 'adltTwo Parent'] <- '74'
+CDSS_PERWT$'adlt_All Other'[CDSS_PERWT$'adlt_All Other' == 'adlt_All Other'] <- '75'
+CDSS_PERWT$'adlt_TANF  Timed-Out'[CDSS_PERWT$'adlt_TANF  Timed-Out' == 'adlt_TANF  Timed-Out'] <- '76'
+
+
+##create a total column, first change to integers from characters
+
+CDSS_PERWT$'chld_Two Parent' <- as.integer(CDSS_PERWT$'chld_Two Parent')
+CDSS_PERWT$'chld_Zero Parent' <- as.integer(CDSS_PERWT$'chld_Zero Parent')
+CDSS_PERWT$'chld_All Other' <- as.integer(CDSS_PERWT$'chld_All Other') 
+CDSS_PERWT$'chld_TANF  Timed-Out'  <- as.integer(CDSS_PERWT$'chld_TANF  Timed-Out')
+CDSS_PERWT$'chld_SN/FF/LTS'  <- as.integer(CDSS_PERWT$'chld_SN/FF/LTS')
+CDSS_PERWT$'adlt_Two Parent'  <- as.integer(CDSS_PERWT$'adlt_Two Parent')
+CDSS_PERWT$'adlt_All Other'  <- as.integer(CDSS_PERWT$'adlt_All Other')
+CDSS_PERWT$'adlt_TANF  Timed-Out' <- as.integer(CDSS_PERWT$'adlt_TANF  Timed-Out')
+
+##Create total row for all children and adults
+CDSS_PERWT$Total <- rowSums(CDSS_PERWT[,6:13])
+
+##total cash assistance PARTICIPANTS for 2019, July, end of fiscal year (i.e. numerator)
+CDSS_PERWT %>% filter(Month == "7" & Year == "2019" & `County Name` == "Statewide") %>%
+  select(Total)
+##875,131
+
+
+##---------------------------------------------------------------------------------------
+##maps
+##join CDSS with shapefile
+CDSS_clean$CountyName <- CDSS_clean$'County Name'
+
+cntys_geo <- right_join(cali_geo, CDSS_clean, by = "CountyName")
+
+cntys_geo$COUNTYFIP <- cntys_geo$GeoID
+
+cntys_geo <- cntys_geo %>% 
   filter(Month == 7)
 ##remove statewide info
-CDSS_July_Cntys <- CDSS_July_Cntys[-1, ]
-
-## Merge Cali_geo shapefile with July County caseload
-CDSS_July_Cntys$CountyName <- CDSS_July_Cntys$'County Name'
-
-jly_cntys_geo <- right_join(cali_geo, CDSS_July_Cntys, by = "CountyName")
-
-jly_cntys_geo$COUNTYFIP <- jly_cntys_geo$GeoID
-
-
+cntys_geo <- cntys_geo[-59, ]
 
 ##Cali Counties map of count of cash grant recipients
 ggplot(data = cali_geo) +
-  geom_sf(data = jly_cntys_geo, aes(fill = Total)) +
+  geom_sf(data = cntys_geo, aes(fill = Total)) +
   labs(title = "Total Caseloads Receiving Cash Grants By County",
-       subtitle = "*Gray scale counties are missing in data collected.",
+       subtitle = "*Some counties expressed as 0 for NA data in July.",
        fill = "Total Cases
-(348,220)",
+(366,281)",
        caption = "Source: CDSS 2019-2020 Fiscal Year") + 
   scale_fill_continuous(labels = function(x) format(x, big.mark = ",", scientific = FALSE)) +
   theme_void() 
 
-###data frame with county population below poverty (mean income per person = Pct_poverty
-##only 35 counties have Pct_poverty, the rest are NA 
-CDSS_ACS <- left_join(jly_cntys_geo, ACS_cnty_pvrty, by = "COUNTYFIP")
-
-##map, but only 26 counties show because FIPS codes don't match
-ggplot(data = cali_geo) +
-  geom_sf(data = CDSS_ACS, aes(fill = Pct_Poverty)) +
-  labs(title = "Mean Income Per Person Living in Poverty",
-       subtitle = "ACS 2019 data only captures data from 35/58 counties.
-Some counties are missing from mismatched geographical data points.",
-       fill = "Avg. Income
-Per Person",
-       caption = "Source: IPUMS USA, ACS 2019") + 
-  scale_fill_continuous(labels = dollar_format( )) +
-  theme_void() 
+##select counties with 0, to show which ones
+zero_cnts <- cntys_geo %>% select(Total, CountyName)
 
 
-####Total Eligible population 
-
-##person count in eligible population
-ACS_cnty_pop <- ACS_clean %>% 
-  group_by(COUNTYFIP) %>% 
-  summarise(Ppl_Pov = sum(PERWT))
-
-##create FIP to match with CDSS County codes
-ACS_cnty_pop$COUNTYFIP <- as.integer(ACS_cnty_pop$COUNTYFIP)
-
-ACS_cnty_pop$COUNTYFIP <- paste0("060", ACS_cnty_pop$COUNTYFIP) 
-
-x_CDSS_ACS <- left_join(jly_cntys_geo, ACS_cnty_pop, by = "COUNTYFIP")
-
-ggplot(data = cali_geo) +
-  geom_sf(data = x_CDSS_ACS, aes(fill = Ppl_Pov)) +
-  labs(title = "Population 80% below poverty, with children",
-       subtitle = "ACS 2019 data only captures data from 35/58 counties.
-Some counties are missing from mismatched geographical data points.",
-       fill = "Total People
-(758,243)",
-       caption = "Source: IPUMS USA, ACS 2019") + 
-  scale_fill_continuous(labels = function(x) format(x, big.mark = ",", scientific = FALSE)) +
-  theme_void() 
-
-
-
-########Cases fallout rate per county 
+########Cases fallout rate per county ______________________________________________________________
 CDSS_fallout <- read.xlsx("CDSS_data.xlsx", colNames = F, na.strings="*")
 
 ###Clean data sheet for all caseload info only
@@ -227,8 +300,3 @@ top_10_deny <- CDSS_fallout %>%
   select("County Name", Perc_Denied) %>% 
   arrange(desc(Perc_Denied)) %>%
   head(10)
-
-
-
-
-
