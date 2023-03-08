@@ -22,6 +22,8 @@ setwd("~/Documents/Coding LAB")
 ddi <- read_ipums_ddi("usa_00004.xml")
 ACS_data <- read_ipums_micro(ddi)
 
+ipums_conditions()
+
 ##ACS data shows 39.5 million population in 2019-- correct.
 ACS_data %>%
   summarise(sum(PERWT, na.rm = TRUE))
@@ -30,40 +32,38 @@ ACS_data %>%
 ACS_chld <- ACS_data %>%
   filter(AGE < 18 & POVERTY <= 80)
 
+ACS_chld <- ACS_chld %>% select(SERIAL, HHWT, PERWT, AGE, POVERTY)
+
 ACS_chld %>%
   summarise(sum(PERWT, na.rm = TRUE))
 ##1,127,323
 
 ##filter for unique SERIAL numbers to capture households without repetition (i.e. siblings)
-ACS_chld_dstnct <- ACS_chld %>% distinct(SERIAL, .keep_all = TRUE)
+ACS_chld_dstnct <- ACS_chld %>% 
+  select(SERIAL, AGE, POVERTY) %>% 
+  distinct(SERIAL, .keep_all = TRUE)
 
 ACS_chld_dstnct %>% 
   summarise(sum(HHWT, na.rm = TRUE))
 ##483,225
 
-#create data set to capture only households w/ adults below poverty using unique SERIAL
-ACS_adlts <- ACS_data %>%
-  filter(AGE >=18 & POVERTY <= 80)
+##FINDING PERSON WEIGHTS USING SERIAL ONLY TO JOIN TO ENTIRE ACS DATA
+###This will give us one line for every person who is in one of the ACS_chld_dstnct SERIALs
+ACS_xjoin <- inner_join(ACS_chld_dstnct, ACS_data, by = "SERIAL")
 
-ACS_adlts_dstnct <- ACS_adlts %>% distinct(SERIAL, .keep_all = TRUE)
+ACS_xjoin %>% 
+  summarise(sum(PERWT, na.rm = TRUE))
+##2207546
+875131/2207546
+##39%
 
-ACS_adlts_dstnct %>% 
+ACS_xjoin_dstnct <- ACS_xjoin %>% distinct(SERIAL, .keep_all = TRUE)
+
+ACS_xjoin_dstnct %>% 
   summarise(sum(HHWT, na.rm = TRUE))
-  ##2,159,624
-
-##join adult and child poverty data sets for all households with children below poverty
-ACS_join <- left_join(ACS_chld, ACS_adlts, by = "SERIAL")
-
-ACS_join_dstnct <- ACS_join %>% distinct(SERIAL, .keep_all = TRUE)
-
-ACS_join_dstnct %>% 
-  summarise(sum(HHWT.x, na.rm = TRUE))
-##483,225
-
-ACS_join %>% 
-  summarise(sum(PERWT.x, na.rm = TRUE))
-##1,939,110  
-  
+#483,225
+366281 / 483225
+##75%
 
 ##ACS new with citizenship variable (3 is non citizen, we assume .55 of non citizens are LPR, according to DHS 2015)
 ###___________________Includes Citizenship status 
@@ -300,3 +300,35 @@ top_10_deny <- CDSS_fallout %>%
   select("County Name", Perc_Denied) %>% 
   arrange(desc(Perc_Denied)) %>%
   head(10)
+
+##_________________________________________________________________________________
+###CODE FOR ATTEMPTS TO CAPTURE FAMILY HHWT MADE THAT WERE NOT SUCCESSFUL, 
+##BUT MIGHT STILL BE VALUABLE
+
+#create data set to capture only households w/ adults below poverty using unique SERIAL
+ACS_adlts <- ACS_data %>%
+  filter(AGE >=18 & POVERTY <= 80)
+
+ACS_adlts <- ACS_adlts %>% select(SERIAL, HHWT, PERWT, AGE, POVERTY)
+
+ACS_adlts_dstnct <- ACS_adlts %>% distinct(SERIAL, .keep_all = TRUE)
+
+ACS_adlts_dstnct %>% 
+  summarise(sum(HHWT, na.rm = TRUE))
+##2,159,624 (includes adults with no children!)
+
+##join adult and child poverty data sets for all households with children below poverty
+
+
+ACS_join <- left_join(ACS_chld, ACS_adlts, by = "SERIAL")
+
+
+ACS_join_dstnct <- ACS_join %>% distinct(SERIAL, .keep_all = TRUE)
+
+ACS_join_dstnct %>% 
+  summarise(sum(HHWT.x, na.rm = TRUE))
+##483,225
+
+ACS_join %>% 
+  summarise(sum(PERWT.x, na.rm = TRUE))
+##1,939,110  
